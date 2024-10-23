@@ -402,8 +402,10 @@ impl ASTConversionService {
     }
 
     fn node_text(&self, node: Node) -> String {
-        self.code[node.start_byte()..node.end_byte()].to_string()
-    }
+    let start = node.start_byte();
+    let end = node.end_byte();
+    self.code[start..end].to_string()
+}
 }
 
 fn main() {

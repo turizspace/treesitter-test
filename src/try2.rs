@@ -26,7 +26,7 @@ impl Thing {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug)]
 enum Kind {
     Root,
     Comment,
@@ -49,13 +49,6 @@ enum Kind {
     FunctionCall,
 }
 
-// Implement Default for Kind
-impl Default for Kind {
-    fn default() -> Self {
-        Kind::Root // Set the default variant
-    }
-}
-
 impl FromStr for Kind {
     type Err = ();
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -68,9 +61,13 @@ impl FromStr for Kind {
             "attribute_item" => Ok(Kind::Derive),
             "function_item" => Ok(Kind::Function),
             "impl_item" => Ok(Kind::Impl),
-            // Add more mappings as needed
             _ => Err(()),
         }
+    }
+}
+impl Default for Kind {
+    fn default() -> Self {
+        Kind::Comment
     }
 }
 
@@ -83,7 +80,7 @@ impl ASTConversionService {
     fn new(code: String) -> Self {
         let mut parser = Parser::new();
         parser
-            .set_language(tree_sitter_rust::LANGUAGE.into()) // Call language as a function
+            .set_language(&tree_sitter_rust::LANGUAGE.into()) // Use Rust grammar for Tree-sitter
             .expect("Error loading Rust grammar");
         let tree = parser.parse(&code, None).expect("Failed to parse code");
         ASTConversionService { code, tree }
@@ -107,30 +104,44 @@ impl ASTConversionService {
             println!("          ·{}·", &body[0..cmp::min(18, body.len())]);
         }
 
-        // Handle specific node types and naming
-        if let Some(name_node) = node.child_by_field_name("name") {
-            parent.name = Some(self.node_text(name_node).to_string());
-        }
-
         let node_kind = node.kind().to_string();
+
+        // Match against `Kind` enum
         if let Ok(kind) = Kind::from_str(&node_kind) {
             let mut element = Thing::new(kind, self.node_text(node));
 
-            // Sort children based on their byte positions
-            let mut children: Vec<Node> = node.children(&mut node.walk()).collect();
-            children.sort_by_key(|child| child.start_byte());
-
-            for child in children {
-                self.build_ast(level + 1, child, &mut element);
-                element.relations.push(format!("{:?} -> {:?}", parent.kind, element.kind));
+            // Simplified relation handling (e.g., function to method, struct to field)
+            if node.child_count() > 0 {
+                for child in node.children(&mut node.walk()) {
+                    self.build_ast(level + 1, child, &mut element);
+                    element.relations.push(format!("{:?} -> {:?}", parent.kind, element.kind));
+                }
             }
 
+            // Add the node only if it is part of the `Kind` enum
             parent.children.push(element);
         } else {
+            // Skip nodes that don't match with the `Kind` enum (e.g., detailed expressions, literals)
             if level == lvl_prnt {
-                // Optional debugging message for nodes that are not recognized by Kind
-                println!("{} Unrecognized node kind: {}", space, node.kind());
+                // Optionally, print skipped nodes for debugging
+                // println!("               ...")
             }
+        }
+    }
+
+    // Capture function or method nodes
+    fn build_function_or_method(&self, level: u64, node: Node, parent: &mut Thing) {
+        let node_kind = node.kind().to_string();
+        if node_kind == "function_item" || node_kind == "method_item" {
+            let method_text = self.node_text(node);
+            let mut method_element = Thing::new(Kind::Function, method_text);
+
+            // Add parameters, body, etc., by recursing into the children
+            for child in node.children(&mut node.walk()) {
+                self.build_ast(level + 1, child, &mut method_element);
+            }
+
+            parent.children.push(method_element);
         }
     }
 
@@ -139,10 +150,17 @@ impl ASTConversionService {
     }
 }
 
+fn astring(a: Option<String>) -> String {
+    a.unwrap_or("".to_string())
+}
+
 fn main() {
+    // Read the Rust file content to be parsed
     let code = std::fs::read_to_string("src/try2.rs").expect("Failed to read the Rust source file.");
+
     let service = ASTConversionService::new(code);
 
     let ast_json = service.generate_ast_with_relations();
+    // Output the generated AST in JSON format
     println!("{}", ast_json);
 }
