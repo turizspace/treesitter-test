@@ -49,6 +49,13 @@ enum Kind {
     FunctionCall,
 }
 
+// Implement Default for Kind
+impl Default for Kind {
+    fn default() -> Self {
+        Kind::Root // Set the default variant
+    }
+}
+
 impl FromStr for Kind {
     type Err = ();
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -76,7 +83,7 @@ impl ASTConversionService {
     fn new(code: String) -> Self {
         let mut parser = Parser::new();
         parser
-            .set_language(tree_sitter_rust::LANGUAGE)
+            .set_language(tree_sitter_rust::LANGUAGE.into()) // Call language as a function
             .expect("Error loading Rust grammar");
         let tree = parser.parse(&code, None).expect("Failed to parse code");
         ASTConversionService { code, tree }
@@ -133,7 +140,7 @@ impl ASTConversionService {
 }
 
 fn main() {
-    let code = std::fs::read_to_string("src/try1.rs").expect("Failed to read the Rust source file.");
+    let code = std::fs::read_to_string("src/try2.rs").expect("Failed to read the Rust source file.");
     let service = ASTConversionService::new(code);
 
     let ast_json = service.generate_ast_with_relations();

@@ -1,11 +1,11 @@
-use tree_sitter::{Language, Node, Parser, Tree};
+use tree_sitter::{Node, Parser, Tree};
 use tree_sitter_rust;
 
 use serde_json::{json, Value};
 use std::env;
 use std::fs;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, serde::Serialize)]
 struct Thing {
     name: String,
     attributes: Vec<Value>,
@@ -21,7 +21,7 @@ impl ASTConversionService {
     fn new(code: String) -> Self {
         let mut parser = Parser::new();
         parser
-            .set_language(&tree_sitter_rust::language())
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
             .expect("Error loading Rust grammar");
         let tree = parser.parse(&code, None).expect("Failed to parse code");
         ASTConversionService { code, tree }
@@ -59,29 +59,42 @@ impl ASTConversionService {
     }
 
     fn extract_functions(&self, node: Node) -> Vec<Thing> {
-        let mut functions = Vec::new();
-        for child in node.children(&mut node.walk()) {
-            if child.kind() == "function_item" {
-                let function_name_node = child.child_by_field_name("name").unwrap();
-                let function_name = self.node_text(function_name_node);
-                let parameters = self.extract_parameters(child);
-                let body = self.node_text(child);
-                let called_methods = self.extract_called_methods(child);
-                let local_variables = self.extract_method_variables(child);
-                functions.push(Thing {
-                    name: function_name,
-                    attributes: json!({
-                        "parameters": parameters,
-                        "body": body,
-                        "called_methods": called_methods,
-                        "local_variables": local_variables
-                    }).as_array().unwrap().to_vec(),
-                    children: vec![],
-                });
-            }
+    let mut functions = Vec::new();
+    for child in node.children(&mut node.walk()) {
+        if child.kind() == "function_item" {
+            let function_name_node = child.child_by_field_name("name").unwrap();
+            let function_name = self.node_text(function_name_node);
+            let parameters = self.extract_parameters(child);
+            let body = self.node_text(child);
+            let called_methods = self.extract_called_methods(child);
+            let local_variables = self.extract_method_variables(child);
+
+            // Create a JSON object for attributes
+            let attributes_json = json!({
+                "parameters": parameters,
+                "body": body,
+                "called_methods": called_methods,
+                "local_variables": local_variables
+            });
+
+            // Collect attributes into a Vec<serde_json::Value>
+            let attributes = vec![
+                attributes_json["parameters"].clone(),
+                attributes_json["body"].clone(),
+                attributes_json["called_methods"].clone(),
+                attributes_json["local_variables"].clone(),
+            ];
+
+            functions.push(Thing {
+                name: function_name,
+                attributes, // Use the constructed attributes vector
+                children: vec![],
+            });
         }
-        functions
     }
+    functions
+}
+
 
     fn extract_parameters(&self, function_node: Node) -> Vec<Value> {
         let mut parameters = Vec::new();
@@ -156,24 +169,41 @@ impl ASTConversionService {
     }
 
     fn extract_fields(&self, struct_node: Node) -> Vec<Thing> {
-        let mut fields = Vec::new();
-        if let Some(body_node) = struct_node.child_by_field_name("body") {
-            for field in body_node.named_children(&mut body_node.walk()) {
-                let field_name = self.node_text(field.child_by_field_name("name").unwrap());
-                let field_type = field.child_by_field_name("type").map(|n| self.node_text(n));
-                let attributes = self.extract_metadata(field);
-                fields.push(Thing {
-                    name: field_name,
-                    attributes: vec![json!({
-                        "type": field_type,
-                        "attributes": attributes
-                    })],
-                    children: vec![],
-                });
-            }
+    let mut fields = Vec::new();
+
+    // Check for the presence of the "body" child node
+    if let Some(body_node) = struct_node.child_by_field_name("body") {
+        for field in body_node.named_children(&mut body_node.walk()) {
+            // Attempt to get the field name and handle the case where it may not exist
+            let field_name_node = field.child_by_field_name("name");
+            let field_name = match field_name_node {
+                Some(name_node) => self.node_text(name_node),
+                None => {
+                    eprintln!("Warning: 'name' field not found in field node.");
+                    continue; // Skip this field if name is missing
+                }
+            };
+
+            // Attempt to get the field type, if available
+            let field_type = field.child_by_field_name("type").map(|n| self.node_text(n));
+
+            // Extract attributes
+            let attributes = self.extract_metadata(field);
+
+            // Construct the Thing object and push it to the fields vector
+            fields.push(Thing {
+                name: field_name,
+                attributes: vec![json!({
+                    "type": field_type,
+                    "attributes": attributes
+                })],
+                children: vec![],
+            });
         }
-        fields
     }
+    fields
+}
+
 
     fn extract_enums(&self, node: Node) -> Vec<Thing> {
         let mut enums = Vec::new();
@@ -237,7 +267,7 @@ impl ASTConversionService {
                     {
                         relations.push(Thing {
                             name: "derive".to_string(),
-                            attributes: vec![attribute_text],
+                            attributes: vec![attribute_text.clone()],
                             children: vec![],
                         });
                     }
@@ -282,18 +312,27 @@ impl ASTConversionService {
     }
 
     fn extract_metadata(&self, node: Node) -> Vec<Value> {
-        let mut metadata = Vec::new();
-        for child in node.children(&mut node.walk()) {
-            if child.kind() == "attribute_item" {
-                let attribute_name_node = child.child_by_field_name("attribute").unwrap();
-                let attribute_name = self.node_text(attribute_name_node);
-                metadata.push(json!({
-                    "attribute": attribute_name,
-                }));
+    let mut metadata = Vec::new();
+    for child in node.children(&mut node.walk()) {
+        if child.kind() == "attribute_item" {
+            // Use match to handle the result of child.child_by_field_name
+            match child.child_by_field_name("attribute") {
+                Some(attribute_name_node) => {
+                    let attribute_name = self.node_text(attribute_name_node);
+                    metadata.push(json!({
+                        "attribute": attribute_name,
+                    }));
+                }
+                None => {
+                    eprintln!("Warning: 'attribute' field not found in child node.");
+                    // Optionally, you can skip this child or add a default value
+                }
             }
         }
-        metadata
     }
+    metadata
+}
+
 
     fn extract_nested(&self, node: Node) -> Vec<Thing> {
         let mut nested_items = Vec::new();
