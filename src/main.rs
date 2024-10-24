@@ -1,16 +1,9 @@
-use tree_sitter::{Node, Parser, Tree};
+use tree_sitter::{Language, Node, Parser, Tree};
 use tree_sitter_rust;
 
 use serde_json::{json, Value};
 use std::env;
 use std::fs;
-
-#[derive(Debug, serde::Serialize)]
-struct Thing {
-    name: String,
-    attributes: Vec<Value>,
-    children: Vec<Thing>,
-}
 
 struct ASTConversionService {
     code: String,
@@ -44,57 +37,39 @@ impl ASTConversionService {
         })
     }
 
-    fn extract_imports(&self, node: Node) -> Vec<Thing> {
+    fn extract_imports(&self, node: Node) -> Vec<Value> {
         let mut imports = Vec::new();
         for child in node.children(&mut node.walk()) {
             if child.kind() == "use_declaration" {
-                imports.push(Thing {
-                    name: self.node_text(child),
-                    attributes: vec![],
-                    children: vec![],
-                });
+                imports.push(json!({
+                    "name": self.node_text(child)
+                }));
             }
         }
         imports
     }
 
-    fn extract_functions(&self, node: Node) -> Vec<Thing> {
-    let mut functions = Vec::new();
-    for child in node.children(&mut node.walk()) {
-        if child.kind() == "function_item" {
-            let function_name_node = child.child_by_field_name("name").unwrap();
-            let function_name = self.node_text(function_name_node);
-            let parameters = self.extract_parameters(child);
-            let body = self.node_text(child);
-            let called_methods = self.extract_called_methods(child);
-            let local_variables = self.extract_method_variables(child);
-
-            // Create a JSON object for attributes
-            let attributes_json = json!({
-                "parameters": parameters,
-                "body": body,
-                "called_methods": called_methods,
-                "local_variables": local_variables
-            });
-
-            // Collect attributes into a Vec<serde_json::Value>
-            let attributes = vec![
-                attributes_json["parameters"].clone(),
-                attributes_json["body"].clone(),
-                attributes_json["called_methods"].clone(),
-                attributes_json["local_variables"].clone(),
-            ];
-
-            functions.push(Thing {
-                name: function_name,
-                attributes, // Use the constructed attributes vector
-                children: vec![],
-            });
+    fn extract_functions(&self, node: Node) -> Vec<Value> {
+        let mut functions = Vec::new();
+        for child in node.children(&mut node.walk()) {
+            if child.kind() == "function_item" {
+                let function_name_node = child.child_by_field_name("name").unwrap();
+                let function_name = self.node_text(function_name_node);
+                let parameters = self.extract_parameters(child);
+                let body = self.node_text(child);
+                let called_methods = self.extract_called_methods(child);
+                let local_variables = self.extract_method_variables(child);
+                functions.push(json!({
+                    "name": function_name,
+                    "parameters": parameters,
+                    "body": body,
+                    "called_methods": called_methods,
+                    "local_variables": local_variables
+                }));
+            }
         }
+        functions
     }
-    functions
-}
-
 
     fn extract_parameters(&self, function_node: Node) -> Vec<Value> {
         let mut parameters = Vec::new();
@@ -150,94 +125,70 @@ impl ASTConversionService {
         variables
     }
 
-    fn extract_structs(&self, node: Node) -> Vec<Thing> {
+    fn extract_structs(&self, node: Node) -> Vec<Value> {
         let mut structs = Vec::new();
         for child in node.children(&mut node.walk()) {
             if child.kind() == "struct_item" {
                 if let Some(struct_name_node) = child.child_by_field_name("name") {
                     let struct_name = self.node_text(struct_name_node);
                     let fields = self.extract_fields(child);
-                    structs.push(Thing {
-                        name: struct_name,
-                        attributes: vec![],
-                        children: fields,
-                    });
+                    structs.push(json!({
+                        "name": struct_name,
+                        "fields": fields
+                    }));
                 }
             }
         }
         structs
     }
 
-    fn extract_fields(&self, struct_node: Node) -> Vec<Thing> {
-    let mut fields = Vec::new();
-
-    // Check for the presence of the "body" child node
-    if let Some(body_node) = struct_node.child_by_field_name("body") {
-        for field in body_node.named_children(&mut body_node.walk()) {
-            // Attempt to get the field name and handle the case where it may not exist
-            let field_name_node = field.child_by_field_name("name");
-            let field_name = match field_name_node {
-                Some(name_node) => self.node_text(name_node),
-                None => {
-                    eprintln!("Warning: 'name' field not found in field node.");
-                    continue; // Skip this field if name is missing
-                }
-            };
-
-            // Attempt to get the field type, if available
-            let field_type = field.child_by_field_name("type").map(|n| self.node_text(n));
-
-            // Extract attributes
-            let attributes = self.extract_metadata(field);
-
-            // Construct the Thing object and push it to the fields vector
-            fields.push(Thing {
-                name: field_name,
-                attributes: vec![json!({
+    fn extract_fields(&self, struct_node: Node) -> Vec<Value> {
+        let mut fields = Vec::new();
+        if let Some(body_node) = struct_node.child_by_field_name("body") {
+            for field in body_node.named_children(&mut body_node.walk()) {
+                let field_name = self.node_text(field.child_by_field_name("name").unwrap());
+                let field_type = field.child_by_field_name("type").map(|n| self.node_text(n));
+                let attributes = self.extract_metadata(field);
+                fields.push(json!({
+                    "name": field_name,
                     "type": field_type,
                     "attributes": attributes
-                })],
-                children: vec![],
-            });
+                }));
+            }
         }
+        fields
     }
-    fields
-}
 
-
-    fn extract_enums(&self, node: Node) -> Vec<Thing> {
+    fn extract_enums(&self, node: Node) -> Vec<Value> {
         let mut enums = Vec::new();
         for child in node.children(&mut node.walk()) {
             if child.kind() == "enum_item" {
                 let enum_name_node = child.child_by_field_name("name").unwrap();
                 let enum_name = self.node_text(enum_name_node);
                 let variants = self.extract_variants(child);
-                enums.push(Thing {
-                    name: enum_name,
-                    attributes: vec![],
-                    children: variants,
-                });
+                enums.push(json!({
+                    "name": enum_name,
+                    "variants": variants
+                }));
             }
         }
         enums
     }
 
-    fn extract_variants(&self, enum_node: Node) -> Vec<Thing> {
+    fn extract_variants(&self, enum_node: Node) -> Vec<Value> {
         let mut variants = Vec::new();
         if let Some(body_node) = enum_node.child_by_field_name("body") {
             for variant in body_node.named_children(&mut body_node.walk()) {
                 let variant_name = self.node_text(variant.child_by_field_name("name").unwrap());
-                variants.push(Thing {
-                    name: variant_name,
-                    attributes: vec![],
-                    children: vec![],
-                });
+                variants.push(json!({
+                    "name": variant_name
+                }));
             }
         }
         variants
     }
 
-    fn extract_relations(&self, node: Node) -> Vec<Thing> {
+    fn extract_relations(&self, node: Node) -> Vec<Value> {
         let mut relations = Vec::new();
         for child in node.children(&mut node.walk()) {
             if child.kind() == "impl_item" {
@@ -248,15 +199,12 @@ impl ASTConversionService {
                     let generic_params = child
                         .child_by_field_name("generic_parameters")
                         .map(|n| self.node_text(n));
-                    relations.push(Thing {
-                        name: type_name,
-                        attributes: vec![json!({
-                            "type": "impl",
-                            "trait": trait_name,
-                            "generics": generic_params,
-                        })],
-                        children: vec![],
-                    });
+                    relations.push(json!({
+                        "type": "impl",
+                        "for": type_name,
+                        "trait": trait_name,
+                        "generics": generic_params,
+                    }));
                 }
             } else if child.kind() == "attribute_item" {
                 if let Some(attribute_text) = self.extract_metadata(child).get(0) {
@@ -265,11 +213,10 @@ impl ASTConversionService {
                         .unwrap_or("")
                         .contains("derive")
                     {
-                        relations.push(Thing {
-                            name: "derive".to_string(),
-                            attributes: vec![attribute_text.clone()],
-                            children: vec![],
-                        });
+                        relations.push(json!({
+                            "type": "derive",
+                            "details": attribute_text
+                        }));
                     }
                 }
             }
@@ -277,147 +224,136 @@ impl ASTConversionService {
         relations
     }
 
-    fn extract_constants(&self, node: Node) -> Vec<Thing> {
+    fn extract_constants(&self, node: Node) -> Vec<Value> {
         let mut constants = Vec::new();
         for child in node.children(&mut node.walk()) {
             if child.kind() == "const_item" {
                 let constant_name = self.node_text(child.child_by_field_name("name").unwrap());
                 let constant_value =
                     self.node_text(child.child_by_field_name("value").unwrap_or(child));
-                constants.push(Thing {
-                    name: constant_name,
-                    attributes: vec![json!({
-                        "value": constant_value
-                    })],
-                    children: vec![],
-                });
+                constants.push(json!({
+                    "name": constant_name,
+                    "value": constant_value
+                }));
             }
         }
         constants
     }
 
-    fn extract_modules_and_impls(&self, node: Node) -> Vec<Thing> {
+    fn extract_modules_and_impls(&self, node: Node) -> Vec<Value> {
         let mut modules = Vec::new();
         for child in node.children(&mut node.walk()) {
-            if child.kind() == "mod_item" {
-                let module_name = self.node_text(child.child_by_field_name("name").unwrap());
-                modules.push(Thing {
-                    name: module_name,
-                    attributes: vec![],
-                    children: vec![],
-                });
+            if child.kind() == "mod_item" || child.kind() == "impl_item" {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let name = self.node_text(name_node);
+                    modules.push(json!({
+                        "type": child.kind(),
+                        "name": name,
+                        "children": self.extract_nested(child),
+                    }));
+                }
             }
         }
         modules
     }
 
     fn extract_metadata(&self, node: Node) -> Vec<Value> {
-    let mut metadata = Vec::new();
-    for child in node.children(&mut node.walk()) {
-        if child.kind() == "attribute_item" {
-            // Use match to handle the result of child.child_by_field_name
-            match child.child_by_field_name("attribute") {
-                Some(attribute_name_node) => {
-                    let attribute_name = self.node_text(attribute_name_node);
-                    metadata.push(json!({
-                        "attribute": attribute_name,
-                    }));
-                }
-                None => {
-                    eprintln!("Warning: 'attribute' field not found in child node.");
-                    // Optionally, you can skip this child or add a default value
-                }
+        let mut metadata = Vec::new();
+        for child in node.children(&mut node.walk()) {
+            if child.kind() == "attribute_item" {
+                let attribute_text = self.node_text(child);
+                metadata.push(json!({
+                    "attribute": attribute_text
+                }));
             }
         }
+        metadata
     }
-    metadata
-}
 
-
-    fn extract_nested(&self, node: Node) -> Vec<Thing> {
+    fn extract_nested(&self, node: Node) -> Vec<Value> {
         let mut nested_items = Vec::new();
         for child in node.children(&mut node.walk()) {
-            if child.kind() == "function_item" {
-                let function_name_node = child.child_by_field_name("name").unwrap();
-                let function_name = self.node_text(function_name_node);
-                nested_items.push(Thing {
-                    name: function_name,
-                    attributes: vec![],
-                    children: vec![],
-                });
-            } else if child.kind() == "struct_item" {
-                let struct_name_node = child.child_by_field_name("name").unwrap();
-                let struct_name = self.node_text(struct_name_node);
-                nested_items.push(Thing {
-                    name: struct_name,
-                    attributes: vec![],
-                    children: vec![],
-                });
-            } else if child.kind() == "enum_item" {
-                let enum_name_node = child.child_by_field_name("name").unwrap();
-                let enum_name = self.node_text(enum_name_node);
-                nested_items.push(Thing {
-                    name: enum_name,
-                    attributes: vec![],
-                    children: vec![],
-                });
+            if let Some(name_node) = child.child_by_field_name("name") {
+                nested_items.push(json!({
+                    "type": child.kind(),
+                    "name": self.node_text(name_node),
+                    "children": self.extract_nested(child),
+                }));
+            } else {
+                let new_nested_items = self.extract_nested(child);
+                nested_items.extend(new_nested_items);
             }
         }
         nested_items
     }
 
-    fn extract_globals(&self, node: Node) -> Vec<Thing> {
+    fn extract_globals(&self, node: Node) -> Vec<Value> {
         let mut globals = Vec::new();
         for child in node.children(&mut node.walk()) {
-            if child.kind() == "let_declaration" {
-                let variable_name = self.node_text(child.child_by_field_name("name").unwrap());
-                let value_node = child.child_by_field_name("value");
-                let value_type = value_node.map(|n| self.node_text(n));
-                globals.push(Thing {
-                    name: variable_name,
-                    attributes: vec![json!({
-                        "type": value_type
-                    })],
-                    children: vec![],
-                });
+            if child.kind() == "static_item" {
+                let global_name = self.node_text(child.child_by_field_name("name").unwrap());
+                let global_value =
+                    self.node_text(child.child_by_field_name("value").unwrap_or(child));
+                globals.push(json!({
+                    "name": global_name,
+                    "value": global_value,
+                }));
             }
         }
         globals
     }
 
-    fn extract_schema(&self, node: Node) -> Vec<Thing> {
+    fn extract_schema(&self, node: Node) -> Vec<Value> {
         let mut schemas = Vec::new();
         for child in node.children(&mut node.walk()) {
             if child.kind() == "struct_item" {
-                let struct_name = child.child_by_field_name("name").map(|n| self.node_text(n));
+                let struct_name = self.node_text(child.child_by_field_name("name").unwrap());
+                let attributes = self.extract_metadata(child);
                 let fields = self.extract_fields(child);
-                schemas.push(Thing {
-                    name: struct_name.unwrap_or_else(|| "unknown".to_string()),
-                    attributes: vec![],
-                    children: fields,
-                });
+                let relationships = fields
+                    .iter()
+                    .filter_map(|field| {
+                        if let Some(attribute) = field.get("attributes") {
+                            if attribute.as_str().unwrap_or("").contains("foreign_key") {
+                                Some(json!({
+                                    "field": field.get("name"),
+                                    "relationship": "foreign_key"
+                                }))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                schemas.push(json!({
+                    "struct": struct_name,
+                    "attributes": attributes,
+                    "fields": fields,
+                    "relationships": relationships
+                }));
             }
         }
         schemas
     }
 
     fn node_text(&self, node: Node) -> String {
-    let start = node.start_byte();
-    let end = node.end_byte();
-    self.code[start..end].to_string()
-}
+        self.code[node.byte_range()].to_string()
+    }
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        eprintln!("Please provide a Rust file path as an argument.");
-        return;
+        eprintln!("Usage: {} <rust_source_file>", args[0]);
+        std::process::exit(1);
     }
+    let file_path = &args[1];
+    let code = fs::read_to_string(file_path).expect("Failed to read the Rust source file.");
 
-    let path = &args[1];
-    let code = fs::read_to_string(path).expect("Unable to read file");
     let service = ASTConversionService::new(code);
     let json_output = service.generate_json();
+
     println!("{}", serde_json::to_string_pretty(&json_output).unwrap());
 }
