@@ -4,7 +4,7 @@ use std::cmp;
 use std::str::FromStr;
 use tree_sitter::*;
 
-// Struct to represent each node in the AST
+// Struct to hold AST elements
 #[derive(Default, Serialize, Deserialize, Debug)]
 struct Thing {
     kind: Kind,
@@ -18,7 +18,6 @@ struct Thing {
 }
 
 impl Thing {
-    // Constructor for Thing
     fn new(kind: Kind, text: String) -> Self {
         Thing {
             kind,
@@ -30,8 +29,8 @@ impl Thing {
     }
 }
 
-// Enum to classify node types in the AST
-#[derive(Serialize, Deserialize, Debug)]
+// Enum for different kinds of AST nodes
+#[derive(Ord, PartialOrd, Eq, PartialEq, Clone, Copy, Serialize, Deserialize, Debug)]
 enum Kind {
     Root,
     Comment,
@@ -89,20 +88,17 @@ impl Default for Kind {
 }
 
 impl Kind {
-    // Checks if a node is of undefined kind
     fn is_undefined(&self) -> bool {
         matches!(self, Kind::Undefined)
     }
 }
 
-// Service for converting code into an AST with relationships
 struct ASTConversionService {
     code: String,
     tree: Tree,
 }
 
 impl ASTConversionService {
-    // Initializes the service with Rust code and parses it
     fn new(code: String) -> Self {
         let mut parser = Parser::new();
         parser
@@ -112,7 +108,6 @@ impl ASTConversionService {
         ASTConversionService { code, tree }
     }
 
-    // Generates the AST with relations and converts it to JSON
     fn generate_ast_with_relations(&self) -> String {
         let mut ast_root = Thing::new(Kind::Root, "Root".to_string());
         self.build_ast(self.tree.root_node(), &mut ast_root);
@@ -120,53 +115,79 @@ impl ASTConversionService {
         serde_json::to_string_pretty(&json_ast).unwrap()
     }
 
-    // Adds a name to a parent node if it doesn't already have one
     fn add_parent_name(name: &str, parent: &mut Thing) {
         if parent.name.is_none() {
             parent.name = Some(name.to_string());
         }
     }
 
-    // Assigns a name to nodes of specific types (e.g., type identifiers)
     fn parent_namer(node_kind: &str, body: &str, parent: &mut Thing) {
-        if node_kind == "type_identifier" {
-            Self::add_parent_name(&body, parent);
-        } else if node_kind == "identifier" {
+        if node_kind == "type_identifier" || node_kind == "identifier" {
             Self::add_parent_name(&body, parent);
         }
     }
 
-    // Recursive function to build the AST from syntax nodes
+    // Main function to iterate through the items in the Rust file
     fn build_ast(&self, node: Node, parent: &mut Thing) {
         let node_kind = node.kind().to_string();
         let body = self.node_text(node);
         Self::parent_namer(&node_kind, &body, parent);
+
         if let Ok(kind) = Kind::from_str(&node_kind) {
             let mut element = Thing::new(kind, body);
-            for child in node.children(&mut node.walk()) {
-                self.build_ast(child, &mut element);
+
+            // If it's an Impl block, parse its children to find methods
+            if kind == Kind::Impl {
+                for child in node.children(&mut node.walk()) {
+                    // If the child is a method, handle it differently
+                    let child_kind = child.kind().to_string();
+                    if child_kind == "function_item" {
+                        let method_body = self.node_text(child);
+                        let method_element = Thing::new(Kind::Function, method_body);
+                        element.children.push(method_element);
+                    } else {
+                        self.build_ast(child, &mut element);
+                    }
+                }
+            } else {
+                for child in node.children(&mut node.walk()) {
+                    self.build_ast(child, &mut element);
+                }
             }
+
             if !element.kind.is_undefined() {
                 parent.children.push(element);
             }
         }
+
+        parent.children.sort_by(|a, b| {
+            a.kind.cmp(&b.kind).then_with(|| {
+                a.name.as_ref().unwrap_or(&String::new()).cmp(
+                    b.name.as_ref().unwrap_or(&String::new())
+                )
+            })
+        });
     }
 
-    // Extracts text content for a node, limited to 24 characters
+    // Retrieve a full text representation of a node
     fn node_text(&self, node: Node) -> String {
-        let txt = self.code[node.byte_range()].to_string();
-        txt[0..cmp::min(24, txt.len())].to_string()
+        // Get the full text of the node without truncation
+        self.code[node.byte_range()].to_string()
     }
 }
 
-// Helper function to convert Option<String> to String
+// Example function to handle optional strings
 fn astring(a: Option<String>) -> String {
     a.unwrap_or("".to_string())
 }
 
+// Example usage
 fn main() {
-    let code = std::fs::read_to_string("src/try2.rs").expect("Failed to read the Rust source file.");
+    let code =
+        std::fs::read_to_string("src/try2.rs").expect("Failed to read the Rust source file.");
+
     let service = ASTConversionService::new(code);
+
     let ast_json = service.generate_ast_with_relations();
     println!("{}", ast_json);
 }
